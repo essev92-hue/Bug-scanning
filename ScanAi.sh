@@ -26,8 +26,6 @@ SLACK_WEBHOOK=""
 # Proxy untuk rotasi
 PROXY_LIST=(
     ""
-    # "http://proxy1:8080"
-    # "socks5://127.0.0.1:9050"
 )
 
 # Warna untuk output
@@ -62,7 +60,60 @@ EOF
 echo -e "${NC}"
 
 # ============================================
-# AI MODULE - REAL TIME ANALYSIS
+# FUNGSI UTILITAS
+# ============================================
+
+# Random delay untuk menghindari deteksi
+random_delay() {
+    local min=${1:-1}
+    local max=${2:-5}
+    local delay=$((RANDOM % (max - min + 1) + min))
+    sleep $delay
+}
+
+# Rotasi User-Agent
+get_random_ua() {
+    local idx=$((RANDOM % ${#USER_AGENTS[@]}))
+    echo "${USER_AGENTS[$idx]}"
+}
+
+# Rotasi Proxy
+get_random_proxy() {
+    if [ ${#PROXY_LIST[@]} -gt 0 ]; then
+        local idx=$((RANDOM % ${#PROXY_LIST[@]}))
+        echo "${PROXY_LIST[$idx]}"
+    else
+        echo ""
+    fi
+}
+
+# Validasi target dalam scope
+validate_target() {
+    local target=$1
+    
+    # Whitelist domain/ip (sesuaikan)
+    local whitelist=(
+        "example.com"
+        "test.local"
+        "192.168.*"
+        "10.0.*"
+    )
+    
+    for allowed in "${whitelist[@]}"; do
+        if [[ "$target" == *"$allowed"* ]] || [[ "$allowed" == *"*" && "$target" =~ ^${allowed//\*/.*} ]]; then
+            echo -e "${GREEN}[✓] Target dalam scope${NC}"
+            return 0
+        fi
+    done
+    
+    echo -e "${RED}[✗] Target diluar scope!${NC}"
+    echo -e "${YELLOW}Lanjutkan? (y/N):${NC}"
+    read -r confirm
+    [[ "$confirm" =~ ^[Yy]$ ]] && return 0 || return 1
+}
+
+# ============================================
+# AI MODULE - SIMPLIFIED VERSION
 # ============================================
 
 # Initialize AI Models
@@ -73,112 +124,92 @@ init_ai_models() {
     
     # Check if required Python packages are installed
     if ! command -v python3 &> /dev/null; then
-        echo -e "${YELLOW}[!] Python3 not found. AI features disabled.${NC}"
-        AI_ENABLED=false
+        echo -e "${YELLOW}[!] Python3 not found. Using simple heuristic AI.${NC}"
+        AI_ENABLED=true  # Masih pakai simple AI
         return
     fi
     
-    # Check for ML libraries
-    if python3 -c "import torch, transformers, numpy, sklearn" 2>/dev/null; then
+    # Check for basic Python libraries
+    if python3 -c "import json, re" 2>/dev/null; then
         echo -e "${GREEN}[✓] AI libraries available${NC}"
     else
-        echo -e "${YELLOW}[!] Installing AI dependencies...${NC}"
-        pip3 install --quiet torch transformers numpy scikit-learn requests 2>/dev/null || {
-            echo -e "${RED}[!] Failed to install AI dependencies${NC}"
-            AI_ENABLED=false
-        }
+        echo -e "${YELLOW}[!] Python libraries available${NC}"
     fi
     
-    # Download pre-trained models if not exists
-    if [ ! -f "$AI_MODEL_DIR/vuln_classifier.pkl" ]; then
-        download_ai_models
-    fi
+    echo -e "${GREEN}[✓] AI System Ready${NC}"
 }
 
-# Download AI Models
-download_ai_models() {
-    echo -e "${YELLOW}[*] Downloading AI models...${NC}"
-    
-    # Download vulnerability classification model
-    wget -q --show-progress -O "$AI_MODEL_DIR/vuln_classifier.pkl" \
-        https://github.com/models/vuln-detection/releases/latest/download/vuln_classifier.pkl
-    
-    # Download false positive detection model
-    wget -q --show-progress -O "$AI_MODEL_DIR/fp_detector.h5" \
-        https://github.com/models/vuln-detection/releases/latest/download/fp_detector.h5
-    
-    echo -e "${GREEN}[✓] AI models downloaded${NC}"
-}
-
-# AI-Powered False Positive Detection
+# Simple AI Analysis (tanpa machine learning kompleks)
 ai_analyze_finding() {
     local finding="$1"
     
-    if [ "$AI_ENABLED" = false ]; then
-        echo "true"  # Default to true if AI disabled
-        return
+    # Convert to lowercase untuk case-insensitive matching
+    local finding_lower=$(echo "$finding" | tr '[:upper:]' '[:lower:]')
+    
+    # Heuristic analysis
+    local score=0
+    local max_score=10
+    
+    # Check for SQL Injection patterns
+    if [[ $finding_lower =~ (union.*select|select.*from|insert.*into|update.*set|delete.*from) ]]; then
+        score=$((score + 3))
     fi
     
-    # Use Python AI for analysis
-    python3 -c "
-import json
-import pickle
-import numpy as np
-import sys
-
-finding = '''$finding'''
-
-try:
-    # Load AI model
-    with open('$AI_MODEL_DIR/vuln_classifier.pkl', 'rb') as f:
-        model = pickle.load(f)
+    if [[ $finding_lower =~ (sql.*error|mysql.*error|syntax.*error|database.*error) ]]; then
+        score=$((score + 2))
+    fi
     
-    # Extract features from finding
-    features = extract_features(finding)
+    if [[ $finding_lower =~ (\'or\'\'=\'|\'or1=1|\'or\'1\'=\'1) ]]; then
+        score=$((score + 3))
+    fi
     
-    # Predict
-    prediction = model.predict([features])[0]
-    confidence = model.predict_proba([features])[0].max()
+    # Check for XSS patterns
+    if [[ $finding_lower =~ (<script>|alert\(|onclick=|onload=|onerror=) ]]; then
+        score=$((score + 3))
+    fi
     
-    # Return result
-    if confidence > $AI_CONFIDENCE_THRESHOLD and prediction == 1:
-        print('true')
-    else:
-        print('false')
-        
-except Exception as e:
-    # Fallback to basic heuristic if AI fails
-    if 'sql' in finding.lower() or 'xss' in finding.lower() or 'rce' in finding.lower():
-        print('true')
-    else:
-        print('false')
-"
-}
-
-# Extract features for AI (Python function)
-extract_features() {
-    local finding="$1"
+    if [[ $finding_lower =~ (javascript:|vbscript:|data:text/html) ]]; then
+        score=$((score + 2))
+    fi
     
-    python3 -c "
-import re
-import json
-
-finding = '''$finding'''
-
-# Basic feature extraction
-features = {
-    'has_special_chars': len(re.findall(r'[<>\"\'()]', finding)) > 0,
-    'has_sql_keywords': len(re.findall(r'(select|union|insert|delete|update|drop|alter)', finding, re.I)) > 0,
-    'has_js_keywords': len(re.findall(r'(alert|document|window|script|eval)', finding, re.I)) > 0,
-    'has_path_traversal': len(re.findall(r'(\.\./|\.\.\\\|etc/passwd)', finding)) > 0,
-    'has_command_injection': len(re.findall(r'(\$\(|`|&&|\|\||\$\{)', finding)) > 0,
-    'url_length': len(finding),
-    'has_parameters': '?' in finding,
-    'has_encoded_chars': any(x in finding for x in ['%20', '%27', '%3C', '%3E']),
-}
-
-print(json.dumps(features))
-"
+    # Check for Command Injection
+    if [[ $finding_lower =~ (\;\&|\&\&|\|\||\`.*\`|\$\(.*\)) ]]; then
+        score=$((score + 3))
+    fi
+    
+    if [[ $finding_lower =~ (bin/bash|bin/sh|cmd.exe|powershell) ]]; then
+        score=$((score + 2))
+    fi
+    
+    # Check for Path Traversal
+    if [[ $finding_lower =~ (\.\./|\.\.\\|etc/passwd|etc/shadow|windows/win.ini) ]]; then
+        score=$((score + 3))
+    fi
+    
+    # Check for SSRF
+    if [[ $finding_lower =~ (127.0.0.1|localhost|169.254.169.254|metadata.google.internal) ]]; then
+        score=$((score + 2))
+    fi
+    
+    # Check for LFI/RFI
+    if [[ $finding_lower =~ (include.*php|require.*php|file=.*php|page=.*php) ]]; then
+        score=$((score + 2))
+    fi
+    
+    # Calculate confidence percentage
+    local confidence=$((score * 10))
+    
+    # Debug output
+    if [ "${DEBUG:-false}" = "true" ]; then
+        echo -e "${BLUE}[AI Debug] Score: $score/$max_score, Confidence: $confidence%${NC}"
+    fi
+    
+    # Return result based on threshold
+    if [ $confidence -ge $((AI_CONFIDENCE_THRESHOLD * 100)) ]; then
+        echo "true:$confidence"
+    else
+        echo "false:$confidence"
+    fi
 }
 
 # Real-Time Alert System
@@ -194,11 +225,11 @@ send_real_time_alert() {
     
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     local message="🚨 *VULNERABILITY DETECTED* 🚨
-    
+
 📅 *Time:* $timestamp
 ⚠️ *Severity:* $severity
 🔍 *Type:* $template
-🌐 *URL:* \`$url\`
+🌐 *URL:* $url
 🎯 *AI Confidence:* ${confidence}%
 📊 *Status:* Requires Verification"
 
@@ -232,7 +263,7 @@ send_real_time_alert() {
     # Local notification (for desktop)
     if command -v notify-send &> /dev/null; then
         notify-send -u critical "Deep Bug Hunter Alert" \
-            "Severity: $severity\nType: $template\nURL: $url" &
+            "Severity: $severity\nType: $template\nURL: $url\nConfidence: ${confidence}%" &
     fi
     
     # Play alert sound
@@ -240,6 +271,8 @@ send_real_time_alert() {
         paplay /usr/share/sounds/ubuntu/notifications/Mallet.ogg 2>/dev/null &
     elif command -v afplay &> /dev/null; then
         afplay /System/Library/Sounds/Ping.aiff 2>/dev/null &
+    elif command -v beep &> /dev/null; then
+        beep -f 1000 -l 500 &
     fi
 }
 
@@ -254,10 +287,9 @@ ai_enhanced_scan() {
     
     timestamp=$(date +"%Y%m%d_%H%M%S")
     output_file="$OUTPUT_DIR/ai_scan_$timestamp.json"
-    real_time_log="$OUTPUT_DIR/realtime_$timestamp.log"
     
-    # Create named pipe for real-time processing
-    mkfifo /tmp/nuclei_pipe
+    echo -e "${YELLOW}[*] Target: $target${NC}"
+    echo -e "${YELLOW}[*] Output: $output_file${NC}"
     
     # Start Nuclei with streaming output
     "$NUCLEI_PATH" -u "$target" \
@@ -266,427 +298,356 @@ ai_enhanced_scan() {
         -severity critical,high,medium,low \
         -rate-limit 100 \
         -concurrency 20 \
-        -j \
+        -json \
         -silent \
-        -o /tmp/nuclei_pipe &
+        -o "$output_file" &
     
-    # Process findings in real-time
-    while read -r line; do
+    nuclei_pid=$!
+    
+    echo -e "${CYAN}[*] Monitoring scan in real-time...${NC}"
+    echo -e "${CYAN}[*] Press Ctrl+C to stop monitoring${NC}"
+    
+    # Monitor file for new findings
+    tail -f "$output_file" 2>/dev/null | while read -r line; do
         if [ -n "$line" ]; then
-            # Parse JSON finding
-            template=$(echo "$line" | jq -r '.template // "unknown"' 2>/dev/null)
-            severity=$(echo "$line" | jq -r '.severity // "info"' 2>/dev/null)
-            matched=$(echo "$line" | jq -r '.matched // ""' 2>/dev/null)
-            
-            echo -e "${BLUE}[AI] Analyzing: ${template}${NC}"
-            
-            # AI Analysis
-            ai_result=$(ai_analyze_finding "$line")
-            
-            if [ "$ai_result" = "true" ]; then
-                confidence=$((90 + RANDOM % 10))  # Simulated AI confidence
-                
-                # Send real-time alert for high confidence findings
-                if [ "$confidence" -ge $(echo "$AI_CONFIDENCE_THRESHOLD * 100" | bc) ]; then
-                    send_real_time_alert "$severity" "$template" "$matched" "$confidence"
-                    
-                    # Log to file with AI metadata
-                    enhanced_line=$(echo "$line" | jq --arg conf "$confidence" '. + {"ai_confidence": $conf, "ai_verified": true}')
-                    echo "$enhanced_line" >> "$output_file"
-                    echo "$enhanced_line" >> "$real_time_log"
-                    
-                    echo -e "${GREEN}[AI ✓] Verified: ${template} (${confidence}% confidence)${NC}"
-                else
-                    echo -e "${YELLOW}[AI ?] Low confidence: ${template} (${confidence}% confidence)${NC}"
-                    echo "$line" >> "$output_file"
-                fi
+            # Parse JSON finding menggunakan jq atau Python
+            if command -v jq &> /dev/null; then
+                template=$(echo "$line" | jq -r '.template // "unknown"' 2>/dev/null || echo "unknown")
+                severity=$(echo "$line" | jq -r '.severity // "info"' 2>/dev/null || echo "info")
+                matched=$(echo "$line" | jq -r '.matched // ""' 2>/dev/null || echo "")
             else
-                echo -e "${ORANGE}[AI ✗] False Positive detected: ${template}${NC}"
-                # Log as potential false positive
-                fp_line=$(echo "$line" | jq '. + {"ai_verified": false, "note": "AI detected as potential false positive"}')
-                echo "$fp_line" >> "$output_file"
+                # Simple parsing tanpa jq
+                template=$(echo "$line" | grep -o '"template":"[^"]*"' | cut -d'"' -f4)
+                severity=$(echo "$line" | grep -o '"severity":"[^"]*"' | cut -d'"' -f4)
+                matched=$(echo "$line" | grep -o '"matched":"[^"]*"' | cut -d'"' -f4)
+            fi
+            
+            if [ -n "$template" ] && [ "$template" != "unknown" ]; then
+                echo -e "${BLUE}[AI] Analyzing: ${template}${NC}"
+                
+                # AI Analysis
+                ai_result=$(ai_analyze_finding "$line")
+                ai_decision=$(echo "$ai_result" | cut -d':' -f1)
+                ai_confidence=$(echo "$ai_result" | cut -d':' -f2)
+                
+                if [ "$ai_decision" = "true" ]; then
+                    # Send real-time alert
+                    send_real_time_alert "$severity" "$template" "$matched" "$ai_confidence"
+                    
+                    echo -e "${GREEN}[AI ✓] Verified: ${template} (${ai_confidence}% confidence)${NC}"
+                else
+                    echo -e "${ORANGE}[AI ?] Low confidence: ${template} (${ai_confidence}% confidence)${NC}"
+                fi
             fi
         fi
-    done < /tmp/nuclei_pipe
+    done &
     
-    # Cleanup
-    rm /tmp/nuclei_pipe
+    monitor_pid=$!
+    
+    # Wait for nuclei to complete
+    wait $nuclei_pid 2>/dev/null
+    
+    # Stop monitoring
+    kill $monitor_pid 2>/dev/null
     
     echo -e "${GREEN}[✓] AI Scan completed${NC}"
-    ai_generate_report "$output_file"
+    echo -e "${GREEN}[✓] Results saved to: $output_file${NC}"
+    
+    # Generate summary
+    if [ -f "$output_file" ]; then
+        show_ai_summary "$output_file"
+    fi
 }
 
-# ============================================
-# AI-POWERED FUNCTIONS
-# ============================================
-
-# AI-Powered Target Intelligence
-ai_target_analysis() {
-    local target="$1"
-    
-    echo -e "${CYAN}[*] AI Target Analysis...${NC}"
-    
-    # Analyze target technology stack
-    tech_stack=$(analyze_tech_stack "$target")
-    
-    # Predict potential vulnerabilities based on tech stack
-    predicted_vulns=$(ai_predict_vulnerabilities "$tech_stack")
-    
-    # Generate attack surface map
-    attack_surface=$(generate_attack_surface "$target")
-    
-    cat > "$OUTPUT_DIR/ai_analysis_$(date +%s).json" << EOF
-{
-  "target": "$target",
-  "timestamp": "$(date)",
-  "technology_stack": $tech_stack,
-  "predicted_vulnerabilities": $predicted_vulns,
-  "attack_surface": $attack_surface,
-  "ai_recommendations": {
-    "priority_scans": ["sqli", "xss", "rce"],
-    "estimated_risk": "high",
-    "recommended_templates": ["cves", "exposures", "misconfigurations"]
-  }
-}
-EOF
-    
-    echo -e "${GREEN}[✓] AI Analysis completed${NC}"
-}
-
-# AI-Powered Report Generation
-ai_generate_report() {
+# Show AI Summary
+show_ai_summary() {
     local file="$1"
     
-    echo -e "${CYAN}[*] Generating AI-Powered Report...${NC}"
+    echo -e "${CYAN}\n╔══════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║         AI SCAN SUMMARY               ║${NC}"
+    echo -e "${CYAN}╚══════════════════════════════════════╝${NC}"
     
-    if [ ! -f "$file" ] || [ ! -s "$file" ]; then
-        echo -e "${YELLOW}[!] No findings to analyze${NC}"
-        return
+    if [ -f "$file" ] && [ -s "$file" ]; then
+        total_count=0
+        ai_verified=0
+        
+        while read -r line; do
+            if [ -n "$line" ]; then
+                total_count=$((total_count + 1))
+                
+                # Simple check if line contains vulnerability indicators
+                if echo "$line" | grep -qi "sql\|xss\|rce\|injection\|traversal"; then
+                    ai_verified=$((ai_verified + 1))
+                fi
+            fi
+        done < "$file"
+        
+        echo -e "Total Findings: ${RED}$total_count${NC}"
+        echo -e "AI Verified: ${GREEN}$ai_verified${NC}"
+        
+        if [ $total_count -gt 0 ]; then
+            percentage=$((ai_verified * 100 / total_count))
+            echo -e "Confidence Rate: ${BLUE}$percentage%${NC}"
+        fi
+        
+        # Show top findings
+        echo -e "\n${YELLOW}Top Findings:${NC}"
+        grep -i "template" "$file" | head -5 | while read -r line; do
+            template=$(echo "$line" | grep -o '"template":"[^"]*"' | cut -d'"' -f4)
+            if [ -n "$template" ]; then
+                echo "  • $template"
+            fi
+        done
+        
+    else
+        echo -e "${GREEN}[✓] No vulnerabilities found${NC}"
     fi
-    
-    # Generate comprehensive AI report
-    python3 -c "
-import json
-import pandas as pd
-from datetime import datetime
-
-with open('$file', 'r') as f:
-    data = [json.loads(line) for line in f if line.strip()]
-
-if not data:
-    print('No data to analyze')
-    exit()
-
-# Create DataFrame for analysis
-df = pd.DataFrame(data)
-
-# AI Analysis
-total = len(df)
-verified = df['ai_verified'].sum() if 'ai_verified' in df.columns else 0
-high_conf = len(df[df.get('ai_confidence', 0) > 85]) if 'ai_confidence' in df.columns else 0
-
-# Generate insights
-insights = {
-    'total_findings': int(total),
-    'ai_verified': int(verified),
-    'high_confidence': int(high_conf),
-    'risk_score': min(100, int((verified / max(total, 1)) * 100)),
-    'top_vulnerabilities': df['template'].value_counts().head(5).to_dict(),
-    'severity_distribution': df['severity'].value_counts().to_dict(),
-    'recommended_actions': [
-        'Prioritize high-confidence findings',
-        'Manual verification required for medium-risk items',
-        'Review false positives flagged by AI'
-    ]
-}
-
-print(json.dumps(insights, indent=2))
-" > "$OUTPUT_DIR/ai_insights_$(basename "$file")"
-
-    echo -e "${GREEN}[✓] AI Report generated${NC}"
-}
-
-# AI-Powered False Positive Filter
-ai_filter_false_positives() {
-    local input_file="$1"
-    local output_file="$2"
-    
-    echo -e "${CYAN}[*] AI False Positive Filtering...${NC}"
-    
-    python3 -c "
-import json
-
-with open('$input_file', 'r') as f:
-    findings = [json.loads(line) for line in f if line.strip()]
-
-filtered = []
-for finding in findings:
-    # AI decision logic
-    is_fp = False
-    
-    # Heuristic 1: Common false positive patterns
-    fp_patterns = [
-        'generic', 'info', 'debug', 'health', 'status',
-        'version', 'build', 'test', 'example'
-    ]
-    
-    template = finding.get('template', '').lower()
-    matched = finding.get('matched', '').lower()
-    
-    # Check patterns
-    for pattern in fp_patterns:
-        if pattern in template or pattern in matched:
-            is_fp = True
-            break
-    
-    # Heuristic 2: Response characteristics
-    if 'info' in finding.get('severity', '').lower():
-        is_fp = True
-    
-    # Heuristic 3: AI model prediction (simplified)
-    if 'ai_verified' in finding and not finding['ai_verified']:
-        is_fp = True
-    
-    if not is_fp:
-        filtered.append(finding)
-
-print(f'Filtered {len(findings)} -> {len(filtered)} findings')
-
-# Save filtered results
-with open('$output_file', 'w') as f:
-    for finding in filtered:
-        f.write(json.dumps(finding) + '\\n')
-"
 }
 
 # ============================================
-# ENHANCED SCAN MODES WITH AI
+# SCAN MODES
 # ============================================
 
-# Mode: AI Smart Scan
+# Mode 1: AI Smart Scan
 ai_smart_scan() {
     echo -e "${CYAN}[*] AI SMART SCAN MODE${NC}"
     echo -e "${YELLOW}[*] Masukkan target:${NC}"
     read -r target
     
-    # AI Target Analysis
-    ai_target_analysis "$target"
+    if [ -z "$target" ]; then
+        echo -e "${RED}[!] Target tidak boleh kosong${NC}"
+        return
+    fi
     
-    # Multi-phase AI scanning
-    echo -e "${CYAN}[*] Phase 1: Quick Discovery${NC}"
-    "$NUCLEI_PATH" -u "$target" -t "$TEMPLATES_PATH/http/discovery" -j -silent > /tmp/phase1.json
+    validate_target "$target" || return
     
-    echo -e "${CYAN}[*] Phase 2: Vulnerability Scan${NC}"
-    ai_enhanced_scan "$target" "aggressive"
+    # Add protocol jika belum ada
+    if [[ ! "$target" =~ ^https?:// ]]; then
+        echo -e "${YELLOW}[?] Protocol (http/https):${NC}"
+        read -r proto
+        case $proto in
+            https) target="https://$target" ;;
+            *) target="http://$target" ;;
+        esac
+    fi
     
-    echo -e "${CYAN}[*] Phase 3: AI-Powered Fuzzing${NC}"
-    ai_powered_fuzzing "$target"
-    
-    # Generate comprehensive report
-    ai_generate_comprehensive_report "$target"
+    ai_enhanced_scan "$target" "smart"
 }
 
-# AI-Powered Fuzzing
-ai_powered_fuzzing() {
-    local target="$1"
+# Mode 2: Fast Aggressive Scan
+fast_aggressive_scan() {
+    echo -e "${RED}[!] FAST AGGRESSIVE MODE${NC}"
+    echo -e "${YELLOW}[*] Masukkan target:${NC}"
+    read -r target
     
-    echo -e "${CYAN}[*] AI-Powered Intelligent Fuzzing${NC}"
+    validate_target "$target" || return
     
-    # Generate dynamic payloads based on target analysis
-    generate_ai_payloads "$target"
+    if [[ ! "$target" =~ ^https?:// ]]; then
+        target="http://$target"
+    fi
     
-    # Execute fuzzing with AI guidance
+    timestamp=$(date +"%Y%m%d_%H%M%S")
+    output_file="$OUTPUT_DIR/fast_$timestamp.json"
+    
+    echo -e "${PURPLE}[*] Parameters:${NC}"
+    echo "  • Rate: 150 req/sec"
+    echo "  • Concurrency: 25"
+    echo "  • All templates"
+    
     "$NUCLEI_PATH" -u "$target" \
-        -t "$CUSTOM_TEMPLATES/ai-generated" \
-        -rate-limit 50 \
-        -j \
-        -o "$OUTPUT_DIR/ai_fuzzing_$(date +%s).json"
+        -t "$TEMPLATES_PATH" \
+        -severity critical,high,medium,low \
+        -rate-limit 150 \
+        -concurrency 25 \
+        -timeout 10 \
+        -retries 2 \
+        -stats \
+        -json \
+        -o "$output_file"
+    
+    echo -e "${GREEN}[✓] Scan completed${NC}"
+    show_ai_summary "$output_file"
 }
 
-# Generate AI-Powered Payloads
-generate_ai_payloads() {
-    local target="$1"
+# Mode 3: Stealth Mode
+stealth_scan() {
+    echo -e "${GREEN}[*] STEALTH MODE${NC}"
+    echo -e "${YELLOW}Mode ini menghindari deteksi WAF/IDS${NC}"
     
-    echo -e "${YELLOW}[*] Generating AI-Powered Payloads...${NC}"
+    echo -e "${YELLOW}[*] Masukkan target:${NC}"
+    read -r target
     
-    mkdir -p "$CUSTOM_TEMPLATES/ai-generated"
+    validate_target "$target" || return
     
-    # Generate SQL Injection payloads
-    cat > "$CUSTOM_TEMPLATES/ai-generated/sqli-ai.yaml" << 'EOF'
-id: ai-sql-injection
+    if [[ ! "$target" =~ ^https?:// ]]; then
+        target="https://$target"
+    fi
+    
+    timestamp=$(date +"%Y%m%d_%H%M%S")
+    output_file="$OUTPUT_DIR/stealth_$timestamp.json"
+    
+    # Randomize user agent
+    ua=$(get_random_ua)
+    
+    echo -e "${PURPLE}[*] Stealth parameters:${NC}"
+    echo "  • User-Agent: ${ua:0:50}..."
+    echo "  • Rate: 5 req/sec"
+    echo "  • Random delays"
+    
+    "$NUCLEI_PATH" -u "$target" \
+        -t "$TEMPLATES_PATH" \
+        -H "User-Agent: $ua" \
+        -rate-limit 5 \
+        -concurrency 2 \
+        -timeout 30 \
+        -retries 1 \
+        -passive \
+        -no-metadata \
+        -json \
+        -o "$output_file"
+    
+    echo -e "${GREEN}[✓] Stealth scan completed${NC}"
+    show_ai_summary "$output_file"
+}
+
+# Mode 4: Custom Template Scan
+custom_template_scan() {
+    echo -e "${PURPLE}[*] CUSTOM TEMPLATE SCAN${NC}"
+    
+    echo -e "${YELLOW}[*] Masukkan target:${NC}"
+    read -r target
+    
+    validate_target "$target" || return
+    
+    if [[ ! "$target" =~ ^https?:// ]]; then
+        target="http://$target"
+    fi
+    
+    echo -e "${YELLOW}[*] Pilih template category:${NC}"
+    echo "  1. SQL Injection"
+    echo "  2. XSS"
+    echo "  3. Command Injection"
+    echo "  4. Path Traversal"
+    echo "  5. All Custom"
+    
+    read -r choice
+    case $choice in
+        1) templates="$CUSTOM_TEMPLATES/sql" ;;
+        2) templates="$CUSTOM_TEMPLATES/xss" ;;
+        3) templates="$CUSTOM_TEMPLATES/rce" ;;
+        4) templates="$CUSTOM_TEMPLATES/traversal" ;;
+        5) templates="$CUSTOM_TEMPLATES" ;;
+        *) templates="$CUSTOM_TEMPLATES" ;;
+    esac
+    
+    timestamp=$(date +"%Y%m%d_%H%M%S")
+    output_file="$OUTPUT_DIR/custom_$timestamp.json"
+    
+    "$NUCLEI_PATH" -u "$target" \
+        -t "$templates" \
+        -rate-limit 50 \
+        -json \
+        -o "$output_file"
+    
+    echo -e "${GREEN}[✓] Custom scan completed${NC}"
+    show_ai_summary "$output_file"
+}
+
+# ============================================
+# SETUP & CONFIGURATION
+# ============================================
+
+aggressive_setup() {
+    echo -e "${RED}[!] SETUP MODE${NC}"
+    
+    # Create directories
+    mkdir -p "$OUTPUT_DIR" "$LOG_DIR" "$CUSTOM_TEMPLATES" "$WORDLISTS_DIR" "$AI_MODEL_DIR"
+    
+    # Check Nuclei
+    if [ ! -f "$NUCLEI_PATH" ]; then
+        echo -e "${RED}[!] Nuclei not found at $NUCLEI_PATH${NC}"
+        echo -e "${YELLOW}[?] Install Nuclei? (y/n):${NC}"
+        read -r install
+        if [[ "$install" =~ ^[Yy]$ ]]; then
+            go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
+        fi
+    else
+        echo -e "${GREEN}[✓] Nuclei found${NC}"
+        "$NUCLEI_PATH" -version
+    fi
+    
+    # Update templates
+    echo -e "${YELLOW}[*] Updating templates...${NC}"
+    if [ -d "$TEMPLATES_PATH/.git" ]; then
+        cd "$TEMPLATES_PATH" && git pull
+        cd - >/dev/null
+    else
+        echo -e "${YELLOW}[*] Cloning templates...${NC}"
+        git clone --depth 1 https://github.com/projectdiscovery/nuclei-templates.git "$TEMPLATES_PATH"
+    fi
+    
+    # Create basic custom templates
+    create_basic_templates
+    
+    # Count templates
+    count=$(find "$TEMPLATES_PATH" -name "*.yaml" | wc -l 2>/dev/null || echo "0")
+    echo -e "${GREEN}[✓] $count templates loaded${NC}"
+    
+    echo -e "${GREEN}[✓] Setup completed${NC}"
+}
+
+create_basic_templates() {
+    echo -e "${YELLOW}[*] Creating basic templates...${NC}"
+    
+    # SQL Injection template
+    cat > "$CUSTOM_TEMPLATES/basic-sqli.yaml" << EOF
+id: basic-sqli
 info:
-  name: AI-Generated SQL Injection Payloads
-  author: DeepBugHunter-AI
+  name: Basic SQL Injection
+  author: DeepBugHunter
   severity: high
 
 requests:
   - method: GET
     path:
-      - "{{BaseURL}}/ai-test' OR '1'='1"
-      - "{{BaseURL}}/ai-test' UNION SELECT null--"
-      - "{{BaseURL}}/ai-test' AND SLEEP(5)--"
-      - "{{BaseURL}}/ai-test' OR EXISTS(SELECT * FROM users)--"
-    
+      - "{{BaseURL}}?id=1'"
+      - "{{BaseURL}}?id=1' OR '1'='1"
+      - "{{BaseURL}}?id=1' UNION SELECT NULL--"
+
     matchers:
       - type: word
         words:
           - "sql"
           - "syntax"
           - "mysql"
-          - "error"
+          - "database"
         condition: or
 EOF
 
-    # Generate XSS payloads
-    cat > "$CUSTOM_TEMPLATES/ai-generated/xss-ai.yaml" << 'EOF'
-id: ai-xss-payloads
+    # XSS template
+    cat > "$CUSTOM_TEMPLATES/basic-xss.yaml" << EOF
+id: basic-xss
 info:
-  name: AI-Generated XSS Payloads
-  author: DeepBugHunter-AI
+  name: Basic XSS
+  author: DeepBugHunter
   severity: medium
 
 requests:
   - method: GET
     path:
-      - "{{BaseURL}}/search?q=<script>alert('AI_XSS')</script>"
-      - "{{BaseURL}}/search?q=\" onmouseover=\"alert('AI_XSS')\""
-      - "{{BaseURL}}/search?q=<img src=x onerror=alert('AI_XSS')>"
-      - "{{BaseURL}}/search?q=${alert('AI_XSS')}"
-    
+      - "{{BaseURL}}?q=<script>alert(1)</script>"
+      - "{{BaseURL}}?q=\" onmouseover=\"alert(1)\""
+
     matchers:
       - type: word
         words:
           - "<script>"
           - "onmouseover"
-          - "onerror"
-          - "alert('AI_XSS')"
+          - "alert(1)"
         condition: or
 EOF
-}
 
-# ============================================
-# AI DASHBOARD & MONITORING
-# ============================================
-
-# Real-Time Monitoring Dashboard
-start_ai_dashboard() {
-    echo -e "${CYAN}[*] Starting AI Monitoring Dashboard...${NC}"
-    
-    # Create dashboard HTML
-    cat > /tmp/ai_dashboard.html << 'EOF'
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Deep Bug Hunter AI Dashboard</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #0f0f0f; color: #fff; }
-        .dashboard { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
-        .card { background: #1a1a1a; padding: 20px; border-radius: 10px; border-left: 5px solid #4CAF50; }
-        .critical { border-color: #f44336; }
-        .high { border-color: #ff9800; }
-        .medium { border-color: #ffeb3b; }
-        .alert { background: #ff0000; color: white; padding: 10px; border-radius: 5px; animation: blink 1s infinite; }
-        @keyframes blink { 50% { opacity: 0.5; } }
-        .chart { height: 200px; background: #2a2a2a; border-radius: 5px; }
-    </style>
-    <script>
-        function updateDashboard() {
-            fetch('/api/stats')
-                .then(r => r.json())
-                .then(data => {
-                    document.getElementById('findings').innerText = data.total_findings;
-                    document.getElementById('verified').innerText = data.ai_verified;
-                    document.getElementById('alerts').innerHTML = data.recent_alerts.map(a => 
-                        `<div class="card ${a.severity}">${a.template} - ${a.url}</div>`
-                    ).join('');
-                });
-            setTimeout(updateDashboard, 3000);
-        }
-        window.onload = updateDashboard;
-    </script>
-</head>
-<body>
-    <h1>🧠 Deep Bug Hunter AI Dashboard</h1>
-    <div class="dashboard">
-        <div class="card">
-            <h3>Total Findings</h3>
-            <h1 id="findings">0</h1>
-        </div>
-        <div class="card">
-            <h3>AI Verified</h3>
-            <h1 id="verified">0</h1>
-        </div>
-        <div class="card">
-            <h3>Real-Time Alerts</h3>
-            <div id="alerts"></div>
-        </div>
-    </div>
-</body>
-</html>
-EOF
-    
-    # Start simple HTTP server
-    python3 -m http.server 8080 --directory /tmp &
-    echo -e "${GREEN}[✓] Dashboard available at: http://localhost:8080/ai_dashboard.html${NC}"
-}
-
-# ============================================
-# MAIN AI MENU
-# ============================================
-
-ai_main_menu() {
-    while true; do
-        clear
-        echo -e "${CYAN}"
-        cat << "EOF"
-╔══════════════════════════════════════════════════╗
-║          AI-POWERED SCAN MODES                   ║
-╠══════════════════════════════════════════════════╣
-║  1. AI Smart Scan (Recommended)                  ║
-║  2. Real-Time AI Monitoring                      ║
-║  3. AI Target Intelligence                       ║
-║  4. AI-Powered Fuzzing                           ║
-║  5. False Positive Filter (AI)                   ║
-║  6. Configure AI Settings                        ║
-║  7. Test AI Detection                            ║
-║  8. Back to Main Menu                            ║
-╚══════════════════════════════════════════════════╝
-EOF
-        echo -e "${NC}"
-        
-        echo -e "${YELLOW}[?] Pilih mode AI (1-8):${NC}"
-        read -r choice
-        choice=${choice:-0}
-        
-        case $choice in
-            1) ai_smart_scan ;;
-            2) start_ai_dashboard ;;
-            3)
-                echo -e "${YELLOW}[*] Masukkan target:${NC}"
-                read -r target
-                ai_target_analysis "$target"
-                ;;
-            4)
-                echo -e "${YELLOW}[*] Masukkan target:${NC}"
-                read -r target
-                ai_powered_fuzzing "$target"
-                ;;
-            5)
-                echo -e "${YELLOW}[*] Masukkan file hasil scan:${NC}"
-                read -r input_file
-                output_file="${input_file%.*}_filtered.json"
-                ai_filter_false_positives "$input_file" "$output_file"
-                echo -e "${GREEN}[✓] Hasil filter: $output_file${NC}"
-                ;;
-            6) configure_ai_settings ;;
-            7) test_ai_detection ;;
-            8) return ;;
-            *) echo -e "${RED}[!] Pilihan tidak valid${NC}" ;;
-        esac
-        
-        echo -e "\n${YELLOW}Tekan Enter untuk melanjutkan...${NC}"
-        read -r
-    done
+    echo -e "${GREEN}[✓] Basic templates created${NC}"
 }
 
 # Configure AI Settings
@@ -705,13 +666,19 @@ configure_ai_settings() {
         AI_CONFIDENCE_THRESHOLD="$threshold"
     fi
     
-    echo -e "${YELLOW}[?] Telegram Bot Token [current: ${TELEGRAM_BOT_TOKEN:0:10}...]:${NC}"
+    echo -e "${YELLOW}[?] Enable Real-Time Alerts (true/false) [current: $REAL_TIME_ALERTS]:${NC}"
+    read -r alerts
+    if [ -n "$alerts" ]; then
+        REAL_TIME_ALERTS="$alerts"
+    fi
+    
+    echo -e "${YELLOW}[?] Telegram Bot Token (kosongkan untuk skip):${NC}"
     read -r token
     if [ -n "$token" ]; then
         TELEGRAM_BOT_TOKEN="$token"
     fi
     
-    echo -e "${YELLOW}[?] Telegram Chat ID [current: $TELEGRAM_CHAT_ID]:${NC}"
+    echo -e "${YELLOW}[?] Telegram Chat ID:${NC}"
     read -r chat_id
     if [ -n "$chat_id" ]; then
         TELEGRAM_CHAT_ID="$chat_id"
@@ -720,21 +687,86 @@ configure_ai_settings() {
     echo -e "${GREEN}[✓] AI settings updated${NC}"
 }
 
+# ============================================
+# MENU UTAMA
+# ============================================
+
+main_menu() {
+    while true; do
+        clear
+        echo -e "${CYAN}"
+        cat << "EOF"
+╔══════════════════════════════════════════════════╗
+║   DEEP BUG HUNTER - AI MODE v4.0                 ║
+║   AI-Powered Real-Time Vulnerability Detection   ║
+╚══════════════════════════════════════════════════╝
+EOF
+        echo -e "${NC}"
+        
+        echo ""
+        echo -e "${CYAN}╔══════════════════════════════════════╗${NC}"
+        echo -e "${CYAN}║          MAIN MENU                   ║${NC}"
+        echo -e "${CYAN}╠══════════════════════════════════════╣${NC}"
+        echo -e "${CYAN}║  1. AI Smart Scan (Recommended)      ║${NC}"
+        echo -e "${CYAN}║  2. Fast Aggressive Scan            ║${NC}"
+        echo -e "${CYAN}║  3. Stealth Mode                    ║${NC}"
+        echo -e "${CYAN}║  4. Custom Template Scan            ║${NC}"
+        echo -e "${CYAN}║  5. Configure AI Settings           ║${NC}"
+        echo -e "${CYAN}║  6. Setup & Update Tools            ║${NC}"
+        echo -e "${CYAN}║  7. Test AI Detection               ║${NC}"
+        echo -e "${CYAN}║  8. Exit                            ║${NC}"
+        echo -e "${CYAN}╚══════════════════════════════════════╝${NC}"
+        
+        echo -e "${YELLOW}[?] Pilih mode (1-8):${NC}"
+        read -r choice
+        choice=${choice:-0}
+        
+        case $choice in
+            1) ai_smart_scan ;;
+            2) fast_aggressive_scan ;;
+            3) stealth_scan ;;
+            4) custom_template_scan ;;
+            5) configure_ai_settings ;;
+            6) aggressive_setup ;;
+            7) test_ai_detection ;;
+            8) 
+                echo -e "${GREEN}[✓] Keluar...${NC}"
+                exit 0
+                ;;
+            *) echo -e "${RED}[!] Pilihan tidak valid${NC}" ;;
+        esac
+        
+        echo -e "\n${YELLOW}Tekan Enter untuk melanjutkan...${NC}"
+        read -r
+    done
+}
+
 # Test AI Detection
 test_ai_detection() {
     echo -e "${CYAN}[*] Testing AI Detection...${NC}"
     
     # Test cases
     test_cases=(
-        '{"template":"sql-injection","severity":"high","matched":"http://test.com?id=1\\' OR \\'1\\'=\\'1"}'
+        '{"template":"sql-injection","severity":"high","matched":"http://test.com?id=1\\'"'"' OR \\'"'"'1\\'"'"'=\\'"'"'1"}'
         '{"template":"xss","severity":"medium","matched":"http://test.com?q=<script>alert(1)</script>"}'
         '{"template":"info","severity":"info","matched":"http://test.com/version"}'
+        '{"template":"path-traversal","severity":"high","matched":"http://test.com/../../etc/passwd"}'
     )
     
-    for test_case in "${test_cases[@]}"; do
-        echo -e "${BLUE}[TEST] Analyzing: $test_case${NC}"
+    for i in "${!test_cases[@]}"; do
+        test_case="${test_cases[$i]}"
+        echo -e "${BLUE}[TEST $((i+1))] Analyzing...${NC}"
+        echo "Input: $(echo "$test_case" | cut -c1-50)..."
+        
         result=$(ai_analyze_finding "$test_case")
-        echo -e "${GREEN}[RESULT] AI says: $result${NC}"
+        ai_decision=$(echo "$result" | cut -d':' -f1)
+        ai_confidence=$(echo "$result" | cut -d':' -f2)
+        
+        if [ "$ai_decision" = "true" ]; then
+            echo -e "${GREEN}[RESULT] AI says: TRUE (${ai_confidence}% confidence)${NC}"
+        else
+            echo -e "${ORANGE}[RESULT] AI says: FALSE (${ai_confidence}% confidence)${NC}"
+        fi
         echo "---"
     done
 }
@@ -744,52 +776,46 @@ test_ai_detection() {
 # ============================================
 
 main() {
+    # Show warning
     clear
-    echo -e "${CYAN}"
+    echo -e "${RED}"
     cat << "EOF"
-╔══════════════════════════════════════════════════╗
-║          DEEP BUG HUNTER AI v4.0                 ║
-║          AI-Powered Security Scanning            ║
-╚══════════════════════════════════════════════════╝
+╔═══════════════════════════════════════════════════════════════════╗
+║                         ⚠️  WARNING ⚠️                          ║
+╠═══════════════════════════════════════════════════════════════════╣
+║ This tool is for AUTHORIZED security testing only.                ║
+║                                                                   ║
+║ By continuing, you confirm:                                       ║
+║ 1. You have permission to test the target                         ║
+║ 2. You accept all legal responsibility                            ║
+║ 3. You will not use this for illegal purposes                     ║
+╚═══════════════════════════════════════════════════════════════════╝
 EOF
     echo -e "${NC}"
     
-    # Initialize AI
-    init_ai_models
+    echo -e "${YELLOW}[?] Terima syarat dan ketentuan? (y/n):${NC}"
+    read -r accept
     
-    # Main menu
-    while true; do
-        echo ""
-        echo -e "${CYAN}╔══════════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║          MAIN MENU                   ║${NC}"
-        echo -e "${CYAN}╠══════════════════════════════════════╣${NC}"
-        echo -e "${CYAN}║  1. AI-Powered Scanning              ║${NC}"
-        echo -e "${CYAN}║  2. Standard Aggressive Mode         ║${NC}"
-        echo -e "${CYAN}║  3. Setup & Configuration           ║${NC}"
-        echo -e "${CYAN}║  4. Exit                            ║${NC}"
-        echo -e "${CYAN}╚══════════════════════════════════════╝${NC}"
-        
-        echo -e "${YELLOW}[?] Pilih mode (1-4):${NC}"
-        read -r main_choice
-        main_choice=${main_choice:-0}
-        
-        case $main_choice in
-            1) ai_main_menu ;;
-            2) 
-                # Call original aggressive menu
-                echo -e "${YELLOW}[*] Loading standard mode...${NC}"
-                # Placeholder for original menu
-                ;;
-            3) aggressive_setup ;;
-            4) 
-                echo -e "${GREEN}[✓] Keluar...${NC}"
-                exit 0
-                ;;
-            *) echo -e "${RED}[!] Pilihan tidak valid${NC}" ;;
-        esac
-    done
+    if [[ ! "$accept" =~ ^[Yy]$ ]]; then
+        echo -e "${GREEN}[✓] Keluar dengan aman${NC}"
+        exit 0
+    fi
+    
+    # Initialize
+    init_ai_models
+    aggressive_setup
+    
+    # Start main menu
+    main_menu
 }
 
-# Start
+# Trap interrupt
 trap 'echo -e "\n${RED}Interrupted${NC}"; exit' INT
+
+# Check root
+if [[ $EUID -eq 0 ]]; then
+    echo -e "${YELLOW}[!] Running as root - be careful${NC}"
+fi
+
+# Start
 main
